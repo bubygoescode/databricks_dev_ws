@@ -14,6 +14,11 @@ if (-not $cmd) { exit 0 }
 
 $cmdLower = $cmd.ToLower()
 
+# Git operations never touch Unity Catalog directly, even when commit messages or PR
+# text happen to mention catalog names or "Databricks" in prose. Skip them outright.
+$firstToken = ($cmd.Trim() -split '\s+')[0] -replace '\.exe$', ''
+if ($firstToken -match '^git$') { exit 0 }
+
 $allowedCatalog = 'sandbox_others'
 $disallowed = @('system', 'samples', 'gops_dev', 'sandbox_hackaton')
 
