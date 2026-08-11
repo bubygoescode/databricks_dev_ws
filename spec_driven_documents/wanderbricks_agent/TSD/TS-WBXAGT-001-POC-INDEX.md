@@ -108,3 +108,11 @@ Unlike the SCO Agent TSD (which left several TOQs genuinely open), two of this p
 ## 7. Non-goals (inherited from FSD Section 1 / PRD Section 6)
 
 Do not build: multi-intent decomposition, any write-back to a system outside `sandbox_others`, auto-resolution without human review.
+
+## 8. Where the implementation lives
+
+This TSD is docs-only, under `spec_driven_documents/wanderbricks_agent/`. The code implementing it lives in a separate sibling location, `projects/wanderbricks_agent/` — an empty container as of this writing. Specs and implementation are kept out of the same tree deliberately, but the internal layout of `projects/wanderbricks_agent/` (whether it's a Databricks Asset Bundle, how it's organized, file names) is a build-time decision for whoever/whatever implements this TSD (e.g. Genie Code), not something prescribed here.
+
+The one piece of actual naming guidance that does apply, wherever the implementation ends up: the `silver_`/`gold_`/`AI_` file-naming convention in `TS-WBXAGT-001-POC-COMPONENTS.md` Section 0.
+
+`projects/sco_agent/` does not exist yet — created the same way, later, once WBXAGT proves the pattern out (per `PROBLEM_STATEMENT.md` Section 1).
