@@ -138,7 +138,31 @@ COMMENT 'Conformed pass-through of bronze users. Implements FS-ING-002-POC.';
 
 ---
 
-## 3. Silver: classification (implements FS-CLS-001-POC, FS-CLS-002-POC)
+## 3. Silver: classification (implements FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-004-POC)
+
+### 3.1 `prompt_registry` — versioned prompt templates (implements FS-CLS-004-POC)
+
+Prompts used by any AI/LLM component in this project are never hardcoded inline — they're stored here, addressable by name + version, so a new prompt version (e.g. `v2` of the intent-classification prompt) can be added without a code change to the calling task.
+
+```sql
+CREATE TABLE IF NOT EXISTS sandbox_others.silver_wanderbricks_agent.prompt_registry (
+  prompt_name     STRING NOT NULL COMMENT 'e.g. "ticket_intent_classification". Groups versions of the same logical prompt.',
+  version           INT NOT NULL COMMENT 'Monotonically increasing per prompt_name, starting at 1.',
+  template            STRING NOT NULL COMMENT 'The prompt template text. Placeholders (e.g. {{message_thread}}) are substituted by the calling task at call time.',
+  model_endpoint         STRING COMMENT 'The Model Serving endpoint this version was designed/tested against, if pinned.',
+  is_active                BOOLEAN NOT NULL COMMENT 'Exactly one version per prompt_name should be TRUE at a time - the default used when a version is not explicitly pinned (FS-CLS-004-POC AC-3).',
+  notes                      STRING COMMENT 'Changelog: what changed in this version and why.',
+  created_by                    STRING NOT NULL,
+  created_at                      TIMESTAMP NOT NULL,
+  CONSTRAINT prompt_registry_pk PRIMARY KEY (prompt_name, version)
+)
+USING DELTA
+COMMENT 'Versioned prompt templates for AI components. Implements FS-CLS-004-POC.';
+```
+
+Append-only, same convention as `ticket_classification` below — a new prompt version is a new row, never an edit to an existing version's `template` (so past classifications stay reproducible against the exact template that produced them). Flipping `is_active` to promote a new default version IS an update, but only ever to that one boolean column, on one row at a time (the newly active row), never to `template`.
+
+### 3.2 `ticket_classification`
 
 ```sql
 CREATE TABLE IF NOT EXISTS sandbox_others.silver_wanderbricks_agent.ticket_classification (
@@ -150,8 +174,12 @@ CREATE TABLE IF NOT EXISTS sandbox_others.silver_wanderbricks_agent.ticket_class
   reasoning_summary                STRING NOT NULL COMMENT 'FS-CLS-001-POC AC-2.',
   confidence                         DOUBLE COMMENT 'Numeric 0-1, per TOQ/OQ-04. Persisted but not gated in the App (PRD Section 6 non-goal).',
   model_endpoint                       STRING COMMENT 'Serving endpoint / model version, for reproducibility.',
-  classified_at                          TIMESTAMP NOT NULL,
-  CONSTRAINT ticket_classification_pk PRIMARY KEY (classification_id)
+  prompt_name                            STRING NOT NULL COMMENT 'FK to prompt_registry.prompt_name. FS-CLS-004-POC AC-1.',
+  prompt_version                           INT NOT NULL COMMENT 'FK to prompt_registry.version (with prompt_name). Exact template used for this classification, for reproducibility/audit.',
+  classified_at                              TIMESTAMP NOT NULL,
+  CONSTRAINT ticket_classification_pk PRIMARY KEY (classification_id),
+  CONSTRAINT ticket_classification_prompt_fk FOREIGN KEY (prompt_name, prompt_version)
+    REFERENCES sandbox_others.silver_wanderbricks_agent.prompt_registry (prompt_name, version)
 )
 USING DELTA
 COMMENT 'Classification + extraction output per ticket. Implements FS-CLS-001-POC, FS-CLS-002-POC.';
@@ -259,8 +287,11 @@ COMMENT 'Daily message sentiment counts by intent. Implements FS-RPT-003-POC.';
 ```
 bronze.customer_support_logs ──▶ silver.support_messages (exploded, 1:N)
                                           │
+silver.prompt_registry (1:N versions) ───┤
+     │ (prompt_name, version)            │
+     ▼                                    │
 silver.tickets (1) ──────────────────────┼──▶ silver.ticket_classification (1:N, append-only)
-     │                                    │
+     │                                    │         (FK to prompt_registry)
      │                                    └──▶ silver.ticket_validation (1:N)
      │
      └──▶ silver.ticket_activity_log (1:N, append-only)
@@ -274,4 +305,4 @@ gold.* ◀── aggregated from silver.tickets / ticket_classification / ticket
 
 ## 8. Which tables need review
 
-All objects in Sections 1, 3, 4, 5, and 6 (silver classification/validation/state tables, all gold tables) are newly proposed — not verified against any existing convention. Section 2 (silver reference tables) column names/types **are** verified against real bronze schema (via `databricks tables get`), so those are lower-risk than a from-scratch guess. Before running any DDL: confirm no naming collision with other work in `sandbox_others`, and confirm the schema names (`silver_wanderbricks_agent`, `gold_wanderbricks_agent`) fit whatever medallion-layer naming convention the team settles on for future projects.
+All objects in Sections 1, 3, 4, 5, and 6 (silver classification/validation/state tables, `prompt_registry`, all gold tables) are newly proposed — not verified against any existing convention. Section 2 (silver reference tables) column names/types **are** verified against real bronze schema (via `databricks tables get`), so those are lower-risk than a from-scratch guess. Before running any DDL: confirm no naming collision with other work in `sandbox_others`, and confirm the schema names (`silver_wanderbricks_agent`, `gold_wanderbricks_agent`) fit whatever medallion-layer naming convention the team settles on for future projects.

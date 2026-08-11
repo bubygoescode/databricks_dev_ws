@@ -68,7 +68,8 @@ Same task-per-stage pattern as SCO Agent's TS-TOPO-001-POC, plus the App as a se
 | FS ID | TS module | Coverage |
 |---|---|---|
 | FS-ING-001-POC, FS-ING-002-POC | Components §1 | FULL |
-| FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC | Components §2 | FULL |
+| FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC | Components §2.1-2.2 | FULL |
+| FS-CLS-004-POC | Components §2.0, Data Model §3.1 (`prompt_registry`) | FULL |
 | FS-VAL-001-POC..005-POC | Components §3 | FULL |
 | FS-TRK-001-POC, FS-TRK-002-POC | Components §4 (shared across tasks + App) | FULL |
 | FS-RPT-001-POC..003-POC | Components §5 | FULL |

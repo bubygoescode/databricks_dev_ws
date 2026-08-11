@@ -66,6 +66,17 @@ This specification covers the complete POC: silver transform, LLM-based classifi
 - **Acceptance**: AC-1: Given any of the above failures, when classification is attempted, then `ticket_status = CLASSIFICATION_FAILED`, the error is logged, and no classification row is written for that attempt.
 - **Error behaviour**: Ad hoc manual retry, same pattern as FS-TRI-001-POC in SCO Agent — POC does not need an automated retry loop.
 
+#### FS-CLS-004-POC Prompts are versioned and retrievable from a registry
+- **Implements**: WBX-CLS-001, WBX-CLS-002 — this is a technical elaboration of how those two requirements are fulfilled (reliably and reproducibly), not a new user-facing capability, hence no new PRD-level WBX ID.
+- **User need** (added at user's direction, not from the original PRD interview): "I want to be able to introduce v2, v3, etc. of the classification prompt later without a code change, and know which version produced any given classification."
+- **Description**: The prompt template used for intent classification/extraction (FS-CLS-001-POC, FS-CLS-002-POC) is stored in a registry, addressable by `prompt_name` + `version`, not hardcoded in the classify task's code. Every classification record persists exactly which `prompt_name`/`version` produced it.
+- **Priority**: MUST
+- **Acceptance**:
+  - AC-1: Given any successful classification, when its record is inspected, then `prompt_name` and `prompt_version` are populated, identifying the exact template used.
+  - AC-2: Given a new prompt version is added to the registry, when the classify task next runs, then it picks up the new version without any change to the classify task's own code.
+  - AC-3: Given the registry, exactly one version per `prompt_name` is marked active at a time — the default used when a version isn't explicitly pinned for a run.
+- **Error behaviour**: If no version resolves as active and none is explicitly pinned, the task fails fast (`CLASSIFICATION_FAILED`, per FS-CLS-003-POC) — there is no hardcoded fallback prompt to silently fall back to.
+
 ### 2.3 Validation
 
 #### FS-VAL-001-POC Booking existence and modifiability check
@@ -191,6 +202,7 @@ Mirrors PRD-WBXAGT-001 Section 3 (M-01..M-05):
 | WBX-CLS-001 | FS-CLS-001-POC | FULL |
 | WBX-CLS-002 | FS-CLS-002-POC | FULL |
 | WBX-CLS-003 | FS-CLS-003-POC | FULL |
+| WBX-CLS-001, WBX-CLS-002 (elaboration) | FS-CLS-004-POC | FULL — added at user's direction, not from original PRD interview; see FS-CLS-004-POC's user need note |
 | WBX-VAL-001 | FS-VAL-001-POC | FULL |
 | WBX-VAL-002 | FS-VAL-002-POC | FULL |
 | WBX-VAL-003 | FS-VAL-003-POC | FULL |

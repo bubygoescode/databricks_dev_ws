@@ -20,7 +20,7 @@ Every FS-WBXAGT-001-POC acceptance criterion and every guardrail (TS index Secti
 | TC-ING-002-01 | FS-ING-002-POC AC-1/AC-2 | Bronze `bookings`/`properties`/`hosts`/`booking_updates`/`users` | Transform runs | Every bronze row has a corresponding silver row with the same primary key, unless excluded (TC-ING-002-02) |
 | TC-ING-002-02 | Error: type conformance failure | A reference row has an unparseable field | Transform runs | Row excluded from silver, reason logged, not coerced |
 
-## 2. `classify` task tests (FS-CLS-001-POC..003-POC)
+## 2. `classify` task tests (FS-CLS-001-POC..004-POC)
 
 | Test ID | Covers | Given | When | Then |
 |---|---|---|---|---|
@@ -30,6 +30,11 @@ Every FS-WBXAGT-001-POC acceptance criterion and every guardrail (TS index Secti
 | TC-CLS-002-02 | AC-2 | An extracted field | Recorded | Distinguishable from validated reference data (different table/source) |
 | TC-CLS-003-01 | Error: model failure | The endpoint errors or times out | Classification attempted | `current_status = 'CLASSIFICATION_FAILED'`, no `ticket_classification` row written, error logged |
 | TC-CLS-003-02 | Error: malformed output | The model returns non-schema-conforming JSON | Classification attempted | Same as TC-CLS-003-01 — not partially accepted |
+| TC-CLS-004-01 | FS-CLS-004-POC AC-1 | Any successful classification | Record is inspected | `prompt_name` and `prompt_version` are populated, matching the `prompt_registry` row actually used |
+| TC-CLS-004-02 | FS-CLS-004-POC AC-2 | A new prompt version (e.g. `v2`) is inserted into `prompt_registry` with `is_active = TRUE` (and `v1` flipped to `FALSE`) | `classify` next runs, with no code deployment in between | New classifications reference `prompt_version = 2`, with zero changes to `AI_classify.py` |
+| TC-CLS-004-03 | FS-CLS-004-POC AC-3 | `prompt_registry` for `prompt_name = 'ticket_intent_classification'` | Queried | Exactly one row has `is_active = TRUE` |
+| TC-CLS-004-04 | Error: no active prompt | `is_active = TRUE` on zero rows for the prompt name, and no version pinned | `classify` runs | `current_status = 'CLASSIFICATION_FAILED'`, fails fast, no silent fallback prompt used |
+| TC-CLS-004-05 | Pinned version override | A run explicitly pins `:pinned_version = 1` while `v2` is active | `classify` runs | Uses `v1`'s template, not the active `v2` — confirms the override path works for A/B testing |
 
 ## 3. `validate` task tests (FS-VAL-001-POC..005-POC)
 

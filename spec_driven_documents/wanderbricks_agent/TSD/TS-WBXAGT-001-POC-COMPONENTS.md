@@ -14,12 +14,14 @@ Tables referenced below are defined in [TS-WBXAGT-001-POC-DATA-MODEL.md](TS-WBXA
 
 One Databricks Workflow, four sequential tasks, scheduled every 15 minutes (TOQ-02):
 
-| Task | Type | Calls a model? | Implements |
-|---|---|---|---|
-| `silver_transform` | Python/PySpark | No | FS-ING-001-POC, FS-ING-002-POC |
-| `classify` | Python | **Yes** | FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC |
-| `validate` | Python/PySpark | No | FS-VAL-001-POC..005-POC |
-| `gold_aggregate` | Python/PySpark | No | FS-RPT-001-POC..003-POC |
+| Task | Notebook/file | Type | Calls a model? | Implements |
+|---|---|---|---|---|
+| `silver_transform` | `silver_transform.py` | Python/PySpark | No | FS-ING-001-POC, FS-ING-002-POC |
+| `classify` | `AI_classify.py` | Python | **Yes** | FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC, FS-CLS-004-POC |
+| `validate` | `silver_validate.py` | Python/PySpark | No | FS-VAL-001-POC..005-POC |
+| `gold_aggregate` | `gold_aggregate.py` | Python/PySpark | No | FS-RPT-001-POC..003-POC |
+
+**File naming convention** (applies to this and any future project's implementation code, not just these four): prefix `silver_` for tasks whose defining job is producing/updating the silver layer, `gold_` likewise for gold. A task that calls an LLM/agent is prefixed `AI_` instead, even if its output happens to land in silver or gold — the prefix reflects what the task *is* (an AI component), not just which schema it writes to. `classify` writes to `silver.ticket_classification` but is `AI_classify.py`, not `silver_classify.py`, on that basis.
 
 The App (separate module) is not a Job task — it's an always-on deployable reading/writing `silver.tickets` and `silver.ticket_activity_log` directly via SQL warehouse, independent of the pipeline schedule.
 
@@ -45,13 +47,29 @@ Coordination is entirely through `silver.tickets.current_status`, same pattern a
 
 ---
 
-## 2. `classify` task (implements FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC)
+## 2. `classify` task (implements FS-CLS-001-POC, FS-CLS-002-POC, FS-CLS-003-POC, FS-CLS-004-POC)
+
+### 2.0 Prompt loading (implements FS-CLS-004-POC)
+
+Before calling the model, the task loads the prompt template — it never has the prompt text hardcoded inline:
+
+```sql
+SELECT template, model_endpoint
+FROM sandbox_others.silver_wanderbricks_agent.prompt_registry
+WHERE prompt_name = 'ticket_intent_classification'
+  AND version = COALESCE(:pinned_version, (
+    SELECT version FROM sandbox_others.silver_wanderbricks_agent.prompt_registry
+    WHERE prompt_name = 'ticket_intent_classification' AND is_active = TRUE
+  ))
+```
+
+`:pinned_version` is an optional task parameter — unset by default (uses whichever version is `is_active`), settable per-run to pin an older/newer version for comparison (e.g. an A/B test between `v1` and `v2`) without a code change. If no row resolves (e.g. no `is_active` version exists yet), the task fails fast with a clear error rather than falling back to an inline default — the whole point of the registry is that there is no hardcoded fallback prompt to silently fall back to.
 
 ### 2.1 Model call (TOQ-01)
 
-Input: all `silver.support_messages` rows for a given `ticket_id` with `silver.tickets.current_status = 'NEW'`, concatenated in timestamp order.
+Input: the loaded `template` (2.0) with its `{{message_thread}}` placeholder substituted by all `silver.support_messages` rows for a given `ticket_id` with `silver.tickets.current_status = 'NEW'`, concatenated in timestamp order.
 
-Call a Databricks Model Serving endpoint requesting a schema-constrained JSON response:
+Call the Model Serving endpoint (the `model_endpoint` resolved in 2.0, or a task-level default if the prompt row doesn't pin one) requesting a schema-constrained JSON response:
 
 ```json
 {
@@ -68,9 +86,10 @@ Use structured/constrained outputs, not free-text parsing (CON-GRD-02) — a mal
 ### 2.2 Logic
 
 1. Set `silver.tickets.current_status = 'CLASSIFYING'`.
-2. Call the model (2.1).
-3. On success: insert a `silver.ticket_classification` row; update `silver.tickets.current_status = 'VALIDATING'` and `current_intent`; append a `ticket_activity_log` row (`event_type = 'CLASSIFICATION_RUN'`).
-4. On failure/malformed response: `current_status = 'CLASSIFICATION_FAILED'`, log the error, no `ticket_classification` row written (FS-CLS-003-POC).
+2. Load the prompt (2.0).
+3. Call the model (2.1).
+4. On success: insert a `silver.ticket_classification` row, including `prompt_name` and `prompt_version` from 2.0 (FS-CLS-004-POC AC-1); update `silver.tickets.current_status = 'VALIDATING'` and `current_intent`; append a `ticket_activity_log` row (`event_type = 'CLASSIFICATION_RUN'`, detail naming the prompt version used).
+5. On failure/malformed response, or no resolvable prompt row: `current_status = 'CLASSIFICATION_FAILED'`, log the error, no `ticket_classification` row written (FS-CLS-003-POC).
 
 ### 2.3 Error behaviour
 
