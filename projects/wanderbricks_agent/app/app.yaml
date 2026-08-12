@@ -1,0 +1,18 @@
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port
+  - "8000"
+  - --server.address
+  - "0.0.0.0"
+  - --server.headless
+  - "true"
+  - --server.enableCORS
+  - "false"
+  - --server.enableXsrfProtection
+  - "false"
+
+env:
+  - name: DATABRICKS_SQL_HTTP_PATH
+    value: "/sql/1.0/warehouses/0311a41d65a98815"
