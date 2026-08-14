@@ -122,7 +122,7 @@ def render_queue_view():
             ts = ticket["updated_at"]
             st.write(str(ts)[:16] if ts else "")
 
-
+#TEST commit
 def render_detail_view(ticket_id):
     st.title("\U0001f3ab Ticket: {}".format(ticket_id))
 
