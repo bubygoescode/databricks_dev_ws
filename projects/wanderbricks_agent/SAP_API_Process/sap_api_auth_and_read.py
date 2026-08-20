@@ -1,28 +1,8 @@
 # Databricks notebook source
-# MAGIC %md
-# MAGIC # sap_api_auth_and_read
-# MAGIC Initial discovery notebook for the SAP S/4HANA read APIs reached through SAP CPI
-# MAGIC (collection `DATABRICKS_TO_S4__CPI_NONPROD`). This is **not** a production ETL
-# MAGIC pipeline — it authenticates, calls each service's basic GET endpoint, and shows
-# MAGIC both the raw response and a best-effort projection onto the business fields from
-# MAGIC the "SAP Fields – Real Time Data" reference picture, so the real field mapping can
-# MAGIC be confirmed and refined in a later iteration.
-# MAGIC
-# MAGIC Covers collection folders `01`–`05` (PIR, Source List, Vendor BP, Product Master,
-# MAGIC Purchase Order). Folder `06` is skipped — the collection itself marks it "NOT WORKING".
-# MAGIC
-# MAGIC ## Before running
-# MAGIC This notebook reads the CPI OAuth client credentials from a Databricks secret
-# MAGIC scope. Create it and populate it first:
-# MAGIC ```
-# MAGIC databricks secrets create-scope sap_cpi_nonprod
-# MAGIC databricks secrets put-secret sap_cpi_nonprod cpi_client_id
-# MAGIC databricks secrets put-secret sap_cpi_nonprod cpi_client_secret
-# MAGIC ```
-# MAGIC Scope/key names are configurable below if you use different ones.
-
-# COMMAND ----------
-
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 import requests
 from requests.auth import HTTPBasicAuth
 import logging
@@ -35,10 +15,8 @@ TOKEN_URL = "https://oauthasservices-n4avd0ima5.eu2.hana.ondemand.com/oauth2/api
 SYSTEM_ID = "S4D120"
 SOURCE = "DATABRICKS"
 
-# Placeholders — create this scope/these keys yourself (see markdown cell above)
-SECRET_SCOPE = "sap_cpi_nonprod"
-SECRET_KEY_CLIENT_ID = "cpi_client_id"
-SECRET_KEY_CLIENT_SECRET = "cpi_client_secret"
+CPI_CLIENT_ID = "databricks_cpi_nonprod"
+CPI_CLIENT_SECRET = "DaTA8r1cK$2Cp1$Test"
 
 # COMMAND ----------
 
@@ -54,15 +32,8 @@ def get_cpi_access_token():
     """Fetch a client-credentials bearer token from the CPI OAuth host.
     Fails visibly — no hardcoded fallback token.
     """
-    try:
-        client_id = dbutils.secrets.get(scope=SECRET_SCOPE, key=SECRET_KEY_CLIENT_ID)
-        client_secret = dbutils.secrets.get(scope=SECRET_SCOPE, key=SECRET_KEY_CLIENT_SECRET)
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not read CPI credentials from secret scope '{SECRET_SCOPE}' "
-            f"(keys '{SECRET_KEY_CLIENT_ID}', '{SECRET_KEY_CLIENT_SECRET}'). "
-            f"Create the scope and secrets first — see the markdown cell above. Original error: {e}"
-        )
+    client_id = CPI_CLIENT_ID
+    client_secret = CPI_CLIENT_SECRET
 
     response = requests.post(
         TOKEN_URL,
@@ -85,6 +56,14 @@ logger.info("CPI access token acquired.")
 # MAGIC ## Shared helpers
 
 # COMMAND ----------
+
+import re
+import pandas as pd
+from datetime import datetime, timezone
+
+# SAP S/4HANA max-date sentinel (ms since epoch for 9999-12-31)
+_SAP_MAX_DATE_MS = 253402214400000
+
 
 def sap_headers(token):
     return {
@@ -132,6 +111,26 @@ def project_business_fields(records, desired_fields, label):
     present = [f for f in desired_fields if f not in missing]
     return [{f: r.get(f) for f in present} for r in records]
 
+
+def parse_sap_odata_date(value):
+    """Parse SAP OData V2 date format '/Date(milliseconds)/' to Python date.
+    SAP CPI returns dates as /Date(<ms-since-epoch>)/ in JSON responses.
+    The SAP max-date 9999-12-31 (meaning 'no end date') is returned as NaT
+    since pandas datetime64[ns] cannot represent dates beyond ~2262.
+    Returns None for null/unparseable values or the max-date sentinel.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    match = re.search(r"/Date\(([-+]?\d+)\)/", value)
+    if not match:
+        return None
+    ms = int(match.group(1))
+    if ms >= _SAP_MAX_DATE_MS:
+        return None  # SAP 'no end date' → NaT
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date()
+
+
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -161,33 +160,18 @@ display(pir_root_raw)
 # Business fields available on the root entity
 pir_root_fields = project_business_fields(
     pir_root_raw,
-    desired_fields=["PurchasingInfoRecord", "Supplier", "Material"],
+    desired_fields=["PurchasingInfoRecord", "AvailabilityEndDate", "BaseUnit"],
     label="01 PIR (root)",
 )
-display(pir_root_fields)
 
-# COMMAND ----------
+## NOTES TO ER: Is AvailabilityEndDate same as Valid To Date? UOM use BaseUnit?
+#   Not exist field: Currency
 
-# Raw — org/plant sub-entity, all columns (needed for Valid To Date / Currency / UoM / Purch. Org)
-pir_orgplant_raw = extract_records(sap_get(
-    "/sap/opu/odata/sap/API_INFORECORD_PROCESS_SRV/A_PurgInfoRecdOrgPlantData?$top=100&$format=json",
-    access_token,
-))
-display(pir_orgplant_raw)
-
-# COMMAND ----------
-
-# Business fields per the picture (PurchasingOrganization, PriceValidityEndDate ~ "Valid To Date",
-# Currency, PurgDocOrderQuantityUnit ~ "UoM")
-pir_orgplant_fields = project_business_fields(
-    pir_orgplant_raw,
-    desired_fields=[
-        "PurchasingInfoRecord", "PurchasingOrganization", "Plant",
-        "PriceValidityEndDate", "Currency", "PurgDocOrderQuantityUnit",
-    ],
-    label="01 PIR (org/plant)",
+df_pir_root = pd.DataFrame(pir_root_fields)
+df_pir_root["AvailabilityEndDate"] = pd.to_datetime(
+    df_pir_root["AvailabilityEndDate"].apply(parse_sap_odata_date)
 )
-display(pir_orgplant_fields)
+display(df_pir_root)
 
 # COMMAND ----------
 
@@ -197,9 +181,6 @@ display(pir_orgplant_fields)
 # MAGIC Plant, Valid From, Valid To, Vendor code, Purchase Organisation, Fixed supplier
 # MAGIC indicator, Materials Planning.
 # MAGIC
-# MAGIC **Unverified**: this service has no saved `$metadata` in the collection. Field
-# MAGIC names below (especially the MRP/"Materials Planning" relevance flag) are
-# MAGIC best-effort guesses from standard SAP API naming and must be confirmed once run.
 
 # COMMAND ----------
 
@@ -217,10 +198,16 @@ source_list_fields = project_business_fields(
     desired_fields=[
         "Material", "Plant", "Supplier", "PurchasingOrganization",
         "ValidityStartDate", "ValidityEndDate",
-        "IsFixedSourceOfSupply", "MRPPurchasingSourceIsRlvt",
+        "SourceOfSupplyIsFixed",
     ],
     label="02 Source List",
 )
+
+## NOTES TO ER: Not exist field: Materials Planning
+
+source_list_fields = pd.DataFrame(source_list_fields)
+source_list_fields[["ValidityStartDate", "ValidityEndDate"]] = source_list_fields[["ValidityStartDate", "ValidityEndDate"]].apply(lambda col: pd.to_datetime(col.apply(parse_sap_odata_date), errors="coerce"))
+
 display(source_list_fields)
 
 # COMMAND ----------
@@ -231,23 +218,20 @@ display(source_list_fields)
 # MAGIC code, Purchase Organisation, Currency, Vendor master status, Purchasing Group,
 # MAGIC Confirmation Control.
 # MAGIC
-# MAGIC **Gap**: the collection's basic folders only query the root `A_Supplier` entity
-# MAGIC (general data, no purchasing-org fields). `Currency`, `Purchasing Group`, and
-# MAGIC `Confirmation Control` live on the purchasing-org sub-entity
-# MAGIC `A_SupplierPurchasingOrg`, which isn't in the collection's basic folders — queried
-# MAGIC here anyway since it's required to satisfy the picture's Output fields.
-# MAGIC **Unverified**: no saved `$metadata` for either entity in the collection.
 
 # COMMAND ----------
 
-# Raw — root Supplier entity, all columns
 vendor_root_raw = extract_records(sap_get(
     "/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_Supplier?$top=100&$format=json",
     access_token,
 ))
-display(vendor_root_raw)
+
+display(pd.DataFrame(vendor_root_raw))
 
 # COMMAND ----------
+
+## NOTES TO ER: Field Purchase Organization seems like the API to API
+#   Not exist field: Currency, Vendor Master Status, Purchasing Group, Confirmation Control​
 
 vendor_root_fields = project_business_fields(
     vendor_root_raw,
@@ -267,15 +251,58 @@ display(vendor_purchorg_raw)
 
 # COMMAND ----------
 
+## NOTES TO ER: Not exist field: Field Purchase Organization seems like the API to API
+#   Is field Confirmation Control​ = SupplierConfirmationControlKey ?
+#   Not exist field: Venfor Master Status
+
 vendor_purchorg_fields = project_business_fields(
     vendor_purchorg_raw,
     desired_fields=[
-        "Supplier", "PurchasingOrganization", "OrderCurrency",
-        "PurchasingGroup", "SupplierConfirmationControlKey", "PurchasingIsBlocked",
+        "Supplier", "PurchasingOrganization", "PurchaseOrderCurrency",
+        "PurchasingGroup", "SupplierConfirmationControlKey",
     ],
     label="03 Vendor Master (purchasing org)",
 )
 display(vendor_purchorg_fields)
+
+# COMMAND ----------
+
+# DBTITLE 1,Vendor Master — consolidated view (root + purchasing org)
+
+vendor_expanded_raw = extract_records(sap_get(
+    "/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_Supplier"
+    "?$top=100&$format=json"
+    "&$expand=to_SupplierPurchasingOrg",
+    access_token,
+))
+
+# Flatten: explode the nested navigation property into one row per Supplier x PurchasingOrg
+rows = []
+for rec in vendor_expanded_raw:
+    supplier = rec.get("Supplier")
+    nav = rec.get("to_SupplierPurchasingOrg", {})
+    children = nav.get("results", []) if isinstance(nav, dict) else []
+    if children:
+        for child in children:
+            rows.append({
+                "Supplier": supplier,
+                "PurchasingOrganization": child.get("PurchasingOrganization"),
+                "PurchaseOrderCurrency": child.get("PurchaseOrderCurrency"),
+                "PurchasingGroup": child.get("PurchasingGroup"),
+                "SupplierConfirmationControlKey": child.get("SupplierConfirmationControlKey"),
+            })
+    else:
+        rows.append({
+            "Supplier": supplier,
+            "PurchasingOrganization": None,
+            "PurchaseOrderCurrency": None,
+            "PurchasingGroup": None,
+            "SupplierConfirmationControlKey": None,
+        })
+
+df_vendor_master = pd.DataFrame(rows)
+print(f"Vendors: {len(vendor_expanded_raw)} | Flattened rows: {len(df_vendor_master)}")
+display(df_vendor_master)
 
 # COMMAND ----------
 
@@ -289,12 +316,15 @@ display(vendor_purchorg_fields)
 
 # COMMAND ----------
 
-# Raw — A_Product (MARA-level), all columns
+## NOTES TO ER: Not exist field: Field Purchase Organization seems like the API to API
+#   Not exist field: Currency, Venfor Master Status, Purchasing Group, Confirmation Control​
+
 product_raw = extract_records(sap_get(
     "/sap/opu/odata/sap/API_PRODUCT_SRV/A_Product?$top=100&$format=json",
     access_token,
 ))
-display(product_raw)
+
+display(pd.DataFrame(product_raw))
 
 # COMMAND ----------
 
@@ -312,13 +342,16 @@ product_plant_raw = extract_records(sap_get(
     "/sap/opu/odata/sap/API_PRODUCT_SRV/A_ProductPlant?$top=100&$format=json",
     access_token,
 ))
-display(product_plant_raw)
+
+display(pd.DataFrame(product_plant_raw))
 
 # COMMAND ----------
 
+## NOTES TO ER: Not exist field: Plant-Specific Material Status​
+
 product_plant_fields = project_business_fields(
     product_plant_raw,
-    desired_fields=["Product", "Plant", "ProcurementType", "PlantSpecProductStatus"],
+    desired_fields=["Product", "Plant", "ProcurementType"],
     label="04 Material Master (A_ProductPlant)",
 )
 display(product_plant_fields)
@@ -346,7 +379,8 @@ po_header_raw = extract_records(sap_get(
     "/sap/opu/odata4/sap/api_purchaseorder_2/srvd_a2x/sap/purchaseorder/0001/PurchaseOrder?$top=100&$count=true",
     access_token,
 ))
-display(po_header_raw)
+
+display(pd.DataFrame(po_header_raw))
 
 # COMMAND ----------
 
@@ -356,15 +390,3 @@ po_header_fields = project_business_fields(
     label="05 Open PO (header)",
 )
 display(po_header_fields)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Summary
-# MAGIC Every "fields not found" warning logged above is a business field from the
-# MAGIC picture that could not be confirmed against the actual API response — treat
-# MAGIC those as the punch list for the next iteration of this notebook.
-
-# COMMAND ----------
-
-logger.info("sap_api_auth_and_read completed. Review WARNING-level log lines above for unresolved field mappings.")
